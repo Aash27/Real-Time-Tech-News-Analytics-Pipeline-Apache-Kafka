@@ -399,20 +399,8 @@ python sink_watch_list.py
 - Enrichment before storage
 - Analytics-first schema design
 - Modular extensibility
-
----
-
-# 🚀 Future Improvements
-
-- Deploy Kafka cluster in cloud
-- Dockerize services
-- Add model retraining pipeline
-- Introduce SHAP/attention visualization
-- Real-time streaming Power BI dataset
-- Add alerting system for negative sentiment spikes
-
 ---
 
 # 📄 License
 
-Open-source project for academic and research purposes.
+MIT
