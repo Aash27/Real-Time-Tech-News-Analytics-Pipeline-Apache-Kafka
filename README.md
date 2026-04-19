@@ -1,406 +1,244 @@
-# Real-Time Tech News Analytics & Sentiment Pipeline
+# Real-Time Tech News Analytics Pipeline
 
-An end-to-end real-time streaming system that ingests technology news, processes it through Apache Kafka, enriches it using NLP models and Groq LLM summaries, and outputs structured analytics-ready data for Power BI visualization.
+A production-grade streaming pipeline that ingests tech news from 26 RSS sources, processes articles through Apache Kafka, enriches them with 3 ML models and Groq LLM summaries, and serves structured analytics via a REST API — all with full observability through Prometheus and Grafana.
 
----
-
-## 📌 Project Overview
-
-This project builds a scalable streaming pipeline to monitor technology news in real time.
-
-The system:
-
-- Collects live RSS news feeds
-- Streams data using Apache Kafka
-- Cleans and validates incoming articles
-- Categorizes articles into tech domains
-- Performs sentiment analysis using FinBERT
-- Extracts named entities (ORG, PERSON, GPE)
-- Generates concise summaries using Groq API
-- Filters articles based on keyword watchlists
-- Detects spikes in trending topics
-- Outputs structured data to CSV
-- Feeds data into Power BI dashboards
-
-This project demonstrates real-time data engineering, NLP enrichment, and streaming analytics in a modular architecture.
+**Key numbers:** 26 RSS sources | 5 Kafka topics | 3 HuggingFace models | 101 watchlist keywords | Prometheus + Grafana dashboards | FastAPI REST endpoint
 
 ---
 
-# 🏗 System Architecture
-
-## High-Level Flow
+## Architecture
 
 ```
-RSS Sources
-   ↓
-Kafka: news.raw
-   ↓
-Cleaner
-   ↓
-Kafka: news.cleaned
-   ↓
-Enricher (Category + Sentiment + NER + Groq)
-   ↓
-Kafka: news.enriched
-   ↓
-Watchlist Filter
-   ↓
-Kafka: watchlist.events
-   ↓
-CSV Sink
-   ↓
-Power BI Dashboard
+RSS Sources (26 feeds)
+        |
+        v
+  [rss_fetcher.py] ──> Kafka: news.raw
+        |
+        v
+  [cleaner.py] ──> Kafka: news.cleaned
+        |                        |
+        v                        v (on failure)
+  [enricher_consumer.py]    Kafka: news.failed (DLQ)
+        |
+        v
+  Kafka: news.enriched
+        |
+        v
+  [watchlist_filter.py] ──> Kafka: news.filtered
+        |
+        v
+  [csv_writer.py] ──> data/tech_news.csv
+        |
+        v
+  [api.py] ──> FastAPI REST API (localhost:8080)
+        
+  All components ──> Prometheus (localhost:9090) ──> Grafana (localhost:3000)
 ```
 
 ---
 
-# 🔄 Pipeline Components
+## What Each Component Does
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **RSS Fetcher** | `src/rss_fetcher.py` | Continuously streams articles from 26 tech RSS feeds with deduplication and 24-hour recency filtering |
+| **Cleaner** | `src/cleaner.py` | Deduplicates via SQLite, filters unsafe content (blacklist), normalizes HTML/text fields |
+| **Enricher** | `src/enricher_consumer.py` | Runs 3 ML models: zero-shot categorization (BART-MNLI), sentiment analysis (DistilBERT-SST2), NER (BERT-NER) + Groq LLM summaries |
+| **Watchlist Filter** | `src/watchlist_filter.py` | Regex-matches articles against 101 tech keywords, routes matches to `news.filtered` |
+| **CSV Writer** | `src/csv_writer.py` | Persists filtered articles to CSV with deduplication for Power BI/analytics |
+| **REST API** | `src/api.py` | FastAPI server with `/articles`, `/stats` endpoints — filterable by category, sentiment, source |
+| **Dead Letter Queue** | `src/dlq.py` | Routes failed messages to `news.failed` with error metadata; retry with exponential backoff |
+| **Metrics** | `src/metrics.py` | Prometheus counters, histograms, gauges for every pipeline stage |
 
 ---
 
-## 1️⃣ RSS Fetcher (Producer Layer)
+## Tech Stack
 
-**File:** `rss_fetcher.py`
-
-- Fetches live technology news from RSS feeds (BBC Tech, Google News, etc.)
-- Normalizes fields:
-  - title
-  - summary
-  - URL
-  - source
-  - published_at
-- Publishes structured JSON messages to:
-
-```
-news.raw
-```
-
-This is the ingestion entry point of the pipeline.
+| Layer | Technology |
+|-------|-----------|
+| **Streaming** | Apache Kafka (Redpanda) |
+| **Processing** | Python 3.11+ |
+| **ML / NLP** | HuggingFace Transformers (BART-MNLI, DistilBERT-SST2, BERT-NER) |
+| **LLM** | Groq API (Llama 3.1 8B) |
+| **API** | FastAPI + Uvicorn |
+| **Observability** | Prometheus + Grafana (pre-configured dashboards) |
+| **Orchestration** | Docker Compose |
+| **Storage** | SQLite (dedup state) + CSV (analytics output) |
 
 ---
 
-## 2️⃣ Cleaner (Preprocessing Layer)
+## Quick Start
 
-Consumes from:
-```
-news.raw
-```
-
-Performs:
-- Text normalization
-- Field validation
-- Schema enforcement
-- Removal of malformed records
-
-Publishes cleaned data to:
-
-```
-news.cleaned
-```
-
-This ensures downstream components receive standardized data.
-
----
-
-## 3️⃣ Enricher Consumer (Core Intelligence Layer)
-
-**File:** `enricher_consumer.py`
-
-Consumes from:
-```
-news.cleaned
-```
-
-This is the most critical stage of the system.
-
-It performs four major enrichment tasks:
-
----
-
-### 🧩 A) Category Classification
-
-Each article is categorized into predefined tech domains:
-
-- AI
-- Blockchain
-- Programming
-- Gadgets
-
-This allows structured grouping in dashboards.
-
----
-
-### 😊 B) Sentiment Analysis (FinBERT)
-
-Model Used:
-- FinBERT (Transformer-based model)
-
-Output Classes:
-- Positive
-- Negative
-- Neutral
-
-Why FinBERT?
-- Handles contextual language well
-- Effective for technical and financial news
-- Performs better than majority-class baseline
-
-Sentiment helps:
-- Detect innovation waves
-- Identify crisis events (breaches, layoffs)
-- Track market optimism vs negativity
-
----
-
-### 🏷 C) Named Entity Recognition (NER)
-
-Extracted Entities:
-- ORG (Organizations)
-- PERSON
-- GPE (Geopolitical locations)
-
-This enables:
-- Company tracking
-- Executive mentions
-- Geographic trend analysis
-
----
-
-### 🧠 D) Summary Generation using Groq API
-
-Groq LLM generates concise one-line summaries.
-
-Process:
-
-1. Title + article body sent to Groq API
-2. Prompt requests a short, single-sentence summary
-3. Groq returns condensed article representation
-4. Summary appended to metadata
-
-Benefits:
-- Quick readability
-- Dashboard-friendly
-- Reduced storage footprint
-- Better Power BI presentation
-
-After enrichment, articles are published to:
-
-```
-news.enriched
-```
-
----
-
-## 4️⃣ Watchlist Filter (Trend Detection Layer)
-
-**File:** `watchlist_filter.py`
-
-Consumes from:
-```
-news.enriched
-```
-
-Features:
-
-- Predefined tech keyword watchlist
-- Tracks first mentions
-- Stores mention metadata in SQLite database
-- Filters relevant articles
-
-Publishes events to:
-
-```
-watchlist.events
-```
-
-This enables:
-- Real-time keyword monitoring
-- Emerging trend detection
-- First-occurrence tracking
-
----
-
-## 5️⃣ Spike Detection
-
-**File:** `spike_detector.py`
-
-Monitors article frequency over time.
-
-Detects:
-- Sudden increases in keyword frequency
-- Trending topics
-- News surges
-
-This supports near real-time event awareness.
-
----
-
-## 6️⃣ CSV Sink (Output Layer)
-
-**File:** `sink_watch_list.py`
-
-Consumes from:
-```
-watchlist.events
-```
-
-Outputs structured dataset:
-
-```
-watchlist_events_all.csv
-```
-
-Columns include:
-
-- watch_key
-- first_mention
-- id
-- title
-- summary (Groq-generated)
-- URL
-- source
-- published_at
-- category
-- sentiment
-
-This CSV acts as the data source for Power BI.
-
----
-
-# 📊 Power BI Integration
-
-The final dataset is connected directly to Power BI for:
-
-- Sentiment distribution
-- Article counts by category
-- Source-wise distribution
-- Daily article trends
-- Watchlist event tracking
-- Filterable dashboards
-
----
-
-# 🛠 Tech Stack
-
-### Streaming
-- Apache Kafka
-- Kafka Producers & Consumers
-
-### Processing
-- Python
-- Pandas
-
-### NLP
-- FinBERT (Transformer-based sentiment model)
-- Named Entity Recognition
-- Groq LLM API (Summarization)
-
-### Storage
-- SQLite (watchlist tracking)
-- CSV sink for analytics
-
-### Visualization
-- Power BI
-
----
-
-# ⚙️ How to Run the Project
-
-## 1️⃣ Clone Repository
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/apoorva183/Real-Time-Tech-News-Analytics-Pipeline.git
 cd Real-Time-Tech-News-Analytics-Pipeline
-```
-
----
-
-## 2️⃣ Create Virtual Environment
-
-```bash
-python -m venv venv
-venv\Scripts\activate  # Windows
-```
-
----
-
-## 3️⃣ Install Dependencies
-
-```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
----
+### 2. Start infrastructure
 
-## 4️⃣ Start Kafka & Zookeeper
-
-Make sure Kafka is running before starting producers/consumers.
-
----
-
-## 5️⃣ Add API Keys
-
-Create `.env` file:
-
-```
-GROQ_API_KEY=your_key_here
-NEWS_API_KEY=your_key_here
-```
-
----
-
-## 6️⃣ Run Pipeline (In Order)
-
-Terminal 1:
 ```bash
-python rss_fetcher.py
+docker compose up -d
+bash scripts/create-topics.sh
 ```
 
-Terminal 2:
-```bash
-python cleaner.py
+This starts:
+- **Redpanda** (Kafka) on `localhost:9092`
+- **Prometheus** on `localhost:9090`
+- **Grafana** on `localhost:3000` (login: admin / pipeline)
+
+### 3. Configure API keys
+
+Create a `.env` file:
+
+```
+GROQ_API_KEY=your_groq_key_here
 ```
 
-Terminal 3:
+### 4. Run the pipeline
+
+Each component runs in its own terminal:
+
 ```bash
-python enricher_consumer.py
+# Terminal 1: Start fetching news
+cd src && python rss_fetcher.py
+
+# Terminal 2: Clean incoming articles
+cd src && python cleaner.py
+
+# Terminal 3: Enrich with ML models (first run downloads ~1.6GB of models)
+cd src && python enricher_consumer.py
+
+# Terminal 4: Filter against watchlist
+cd src && python watchlist_filter.py
+
+# Terminal 5: Write to CSV
+cd src && python csv_writer.py
+
+# Terminal 6: Start the API
+cd src && uvicorn api:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-Terminal 4:
-```bash
-python watchlist_filter.py
-```
+### 5. Explore the data
 
-Terminal 5:
+- **API**: http://localhost:8080/articles?category=AI&limit=10
+- **Stats**: http://localhost:8080/stats
+- **Grafana**: http://localhost:3000 (pre-loaded dashboard: "News Pipeline Overview")
+- **Prometheus**: http://localhost:9090
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /` | GET | Health check with article count |
+| `GET /articles` | GET | List articles (query params: `category`, `sentiment`, `source`, `watchname`, `search`, `limit`, `offset`) |
+| `GET /articles/{id}` | GET | Get single article by ID |
+| `GET /stats` | GET | Aggregated stats: counts by category, sentiment, source, top watchlist terms |
+
+**Example:**
+
 ```bash
-python sink_watch_list.py
+# Get AI articles with positive sentiment
+curl "http://localhost:8080/articles?category=AI&sentiment=POSITIVE&limit=5"
+
+# Pipeline statistics
+curl "http://localhost:8080/stats"
 ```
 
 ---
 
-# 🎯 Key Capabilities Demonstrated
+## Observability
 
-- Real-time streaming architecture
-- Event-driven data processing
-- Transformer-based sentiment classification
-- LLM-based summarization
-- Named entity extraction
-- Keyword spike detection
-- Analytics-ready structured output
-- BI integration
+Every pipeline component exposes Prometheus metrics on its own port:
+
+| Component | Metrics Port | Key Metrics |
+|-----------|-------------|-------------|
+| RSS Fetcher | `:8000` | `pipeline_articles_fetched_total`, `pipeline_fetch_errors_total`, `pipeline_fetch_duration_seconds` |
+| Cleaner | `:8001` | `pipeline_articles_cleaned_total`, `pipeline_articles_deduped_total`, `pipeline_articles_blocked_total` |
+| Enricher | `:8002` | `pipeline_articles_enriched_total`, `pipeline_enrichment_duration_seconds`, `pipeline_groq_requests_total` |
+| Watchlist Filter | `:8003` | `pipeline_articles_filtered_total`, `pipeline_articles_dropped_total` |
+| CSV Writer | `:8004` | `pipeline_csv_rows_written_total`, `pipeline_csv_duplicates_skipped_total` |
+
+Grafana comes pre-configured with a **"News Pipeline Overview"** dashboard showing:
+- Articles fetched per source (time series)
+- Enrichment latency (p50/p95)
+- Pipeline throughput counters
+- Sentiment distribution (pie chart)
+- Articles by category (bar gauge)
+- Groq API request rates
+- Dead-letter queue activity
+- Fetch errors by feed
 
 ---
 
-# 🧱 Design Principles
+## Fault Tolerance
 
-- Producer–Consumer architecture
-- Topic-based decoupling
-- Stateless micro-components
-- Enrichment before storage
-- Analytics-first schema design
-- Modular extensibility
+### Dead Letter Queue (`news.failed`)
+
+When any component fails to process a message, instead of silently dropping it:
+
+1. The message is sent to the `news.failed` Kafka topic
+2. Error metadata is attached (stage, error type, traceback, timestamp)
+3. The `pipeline_dlq_messages_total` metric is incremented
+4. Processing continues with the next message
+
+### Retry with Exponential Backoff
+
+External API calls (Groq) use automatic retry:
+
+- Up to 3 attempts with exponential backoff (1s, 2s, 4s delays)
+- Each retry is tracked via `pipeline_retry_attempts_total`
+- After exhausting retries, falls back to truncated text summary
+
 ---
 
-# 📄 License
+## Kafka Topics
+
+| Topic | Purpose |
+|-------|---------|
+| `news.raw` | Raw articles from RSS fetcher |
+| `news.cleaned` | Deduplicated and normalized articles |
+| `news.enriched` | Articles with sentiment, category, entities, summaries |
+| `news.filtered` | Articles matching watchlist keywords |
+| `news.failed` | Dead-letter queue for failed processing |
+
+---
+
+## Project Structure
+
+```
+.
+├── docker-compose.yml          # Redpanda + Prometheus + Grafana
+├── requirements.txt
+├── data/
+│   └── watchlist.txt           # 101 tech keywords
+├── monitoring/
+│   ├── prometheus.yml          # Scrape config for all components
+│   └── grafana/
+│       ├── provisioning/       # Auto-configured datasource + dashboard provider
+│       └── dashboards/         # Pre-built pipeline overview dashboard
+├── scripts/
+│   └── create-topics.sh        # Create all Kafka topics
+└── src/
+    ├── rss_fetcher.py          # Producer: 26 RSS feeds
+    ├── cleaner.py              # Dedup + content filter
+    ├── enricher_consumer.py    # 3 ML models + Groq LLM
+    ├── watchlist_filter.py     # Keyword matching
+    ├── csv_writer.py           # CSV sink
+    ├── api.py                  # FastAPI REST API
+    ├── metrics.py              # Prometheus metrics definitions
+    ├── dlq.py                  # Dead-letter queue + retry logic
+    └── common_utils.py         # Shared utilities
+```
+
+---
+
+## License
 
 MIT
